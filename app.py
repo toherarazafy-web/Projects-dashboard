@@ -14,8 +14,92 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.title(" Dashboard multi-projets")
-st.caption("Bases PostgreSQL : 137, 137est et 4101")
+# ---------------------------------------------------------------------------
+# Charte graphique CRS
+# ---------------------------------------------------------------------------
+CRS_COLORS = {
+    "bold_blue": "#00A2C7",
+    "crs_blue": "#00468B",
+    "bold_purple": "#9053A1",
+    "bold_teal": "#0099A9",
+    "bold_green": "#79A02C",
+    "bold_orange": "#EF6E0B",
+    "humble_gray": "#9D9385",
+    "humble_blue": "#7A99AC",
+    "humble_green": "#9B9455",
+    "humble_gold": "#B48F4B",
+    "web_footer": "#001F4E",
+    "emergency_red": "#DA291C",
+}
+
+# Palette qualitative utilisée par défaut pour tous les graphiques Plotly.
+CRS_PALETTE = [
+    CRS_COLORS["crs_blue"],
+    CRS_COLORS["bold_orange"],
+    CRS_COLORS["bold_teal"],
+    CRS_COLORS["bold_purple"],
+    CRS_COLORS["bold_green"],
+    CRS_COLORS["humble_gold"],
+    CRS_COLORS["humble_blue"],
+    CRS_COLORS["bold_blue"],
+    CRS_COLORS["humble_green"],
+    CRS_COLORS["humble_gray"],
+]
+px.defaults.color_discrete_sequence = CRS_PALETTE
+px.defaults.template = "plotly_white"
+
+st.markdown(
+    f"""
+    <style>
+    section[data-testid="stSidebar"] {{
+        background-color: #F4F8FA;
+        border-right: 3px solid {CRS_COLORS['crs_blue']};
+    }}
+    div[data-testid="stMetric"] {{
+        background-color: #FFFFFF;
+        border: 1px solid #E4EBEE;
+        border-left: 5px solid {CRS_COLORS['bold_blue']};
+        border-radius: 8px;
+        padding: 0.75rem 1rem 0.5rem 1rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }}
+    div[data-testid="stMetricValue"] {{
+        color: {CRS_COLORS['crs_blue']};
+    }}
+    div[data-testid="stMetricLabel"] {{
+        color: {CRS_COLORS['humble_gray']};
+    }}
+    .crs-banner {{
+        background-color: {CRS_COLORS['crs_blue']};
+        padding: 1.1rem 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 1.2rem;
+    }}
+    .crs-banner h1 {{
+        color: #FFFFFF;
+        margin: 0;
+        font-size: 1.7rem;
+    }}
+    .crs-banner p {{
+        color: #CCE4F5;
+        margin: 0.2rem 0 0 0;
+        font-size: 0.9rem;
+    }}
+    .crs-section-title {{
+        color: {CRS_COLORS['crs_blue']};
+        border-bottom: 3px solid {CRS_COLORS['bold_orange']};
+        display: inline-block;
+        padding-bottom: 0.15rem;
+        margin-top: 0.5rem;
+    }}
+    </style>
+    <div class="crs-banner">
+        <h1>📊 Dashboard multi-projets</h1>
+        <p>Bases PostgreSQL : 137, 137est et 4101</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 MAX_ROWS = 50000
 PRESENT_VALUES = {"yes", "true", "t", "1", "oui", "o"}
@@ -55,10 +139,12 @@ def normalize_text(value):
     return "".join(char for char in value if not unicodedata.combining(char))
 
 
-def make_unique_key(dataframe, cin_col, name_col):
-    """Clé bénéficiaire = CIN | NOM EN MAJUSCULES.
+def make_unique_key(dataframe, cin_col, name_col, age_col=None):
+    """Clé bénéficiaire = NOM EN MAJUSCULES | CIN | ÂGE.
 
-    Les lignes où CIN et nom sont tous deux vides sont exclues des comptages.
+    Les doublons sont identifiés par la concaténation du nom complet, du CIN
+    et de l'âge. Les lignes où ces trois champs sont vides sont exclues des
+    comptages.
     """
     cin = (
         dataframe[cin_col].fillna("").astype(str).str.strip()
@@ -70,8 +156,57 @@ def make_unique_key(dataframe, cin_col, name_col):
         if name_col in dataframe.columns
         else pd.Series("", index=dataframe.index)
     )
-    key = cin + "|" + name
-    return key.mask((cin == "") & (name == ""))
+    if age_col is not None and age_col in dataframe.columns:
+        age_numeric = pd.to_numeric(dataframe[age_col], errors="coerce")
+        age = age_numeric.apply(
+            lambda value: "" if pd.isna(value) else str(int(value))
+        )
+    else:
+        age = pd.Series("", index=dataframe.index)
+
+    key = name + "|" + cin + "|" + age
+    return key.mask((cin == "") & (name == "") & (age == ""))
+
+
+def sorted_options(dataframe, column):
+    """Valeurs uniques triées d'une colonne, en ignorant les vides/NaN."""
+    if dataframe.empty or column not in dataframe.columns:
+        return []
+    values = dataframe[column].dropna().astype(str).str.strip()
+    values = values[values != ""]
+    return sorted(values.unique().tolist())
+
+
+def apply_location_filters(dataframe, region, district, commune):
+    """Filtre un DataFrame par Région / District / Commune si les colonnes existent."""
+    if dataframe.empty:
+        return dataframe
+    filtered = dataframe
+    if region != "Toutes les régions" and "region" in filtered.columns:
+        filtered = filtered[
+            filtered["region"].astype(str).str.strip() == region
+        ]
+    if district != "Tous les districts" and "district" in filtered.columns:
+        filtered = filtered[
+            filtered["district"].astype(str).str.strip() == district
+        ]
+    if commune != "Toutes les communes" and "commune" in filtered.columns:
+        filtered = filtered[
+            filtered["commune"].astype(str).str.strip() == commune
+        ]
+    return filtered
+
+
+def filter_caption(region, district, commune):
+    """Résumé textuel des filtres géographiques actifs."""
+    parts = []
+    if region != "Toutes les régions":
+        parts.append(f"Région : {region}")
+    if district != "Tous les districts":
+        parts.append(f"District : {district}")
+    if commune != "Toutes les communes":
+        parts.append(f"Commune : {commune}")
+    return " • ".join(parts) if parts else "Aucun filtre géographique actif"
 
 
 def table_exists(project_name, table_name):
@@ -111,7 +246,7 @@ def load_registration(project_name):
         dataframe = pd.read_sql(query, connection)
 
     dataframe["unique_key"] = make_unique_key(
-        dataframe, "ben_cin", "ben_full_name"
+        dataframe, "ben_cin", "ben_full_name", "ben_age"
     )
     return dataframe
 
@@ -159,7 +294,7 @@ def load_distribution_joined(project_name):
     with DATABASES[project_name].connect() as connection:
         dataframe = pd.read_sql(query, connection)
 
-    dataframe["unique_key"] = make_unique_key(dataframe, "cin", "full_name")
+    dataframe["unique_key"] = make_unique_key(dataframe, "cin", "full_name", "age")
 
     # Avant tout affichage, supprimer les données nominatives du DataFrame.
     sensitive_columns = [
@@ -262,9 +397,18 @@ def compute_volet_metrics(dataframe, volet_key):
     }
 
 
-def project_kpis(project_name):
-    registration = load_registration(project_name)
-    distribution = load_distribution_joined(project_name)
+def project_kpis(
+    project_name,
+    region="Toutes les régions",
+    district="Tous les districts",
+    commune="Toutes les communes",
+):
+    registration = apply_location_filters(
+        load_registration(project_name), region, district, commune
+    )
+    distribution = apply_location_filters(
+        load_distribution_joined(project_name), region, district, commune
+    )
 
     unique_beneficiaries = int(registration["unique_key"].nunique(dropna=True)) if not registration.empty else 0
 
@@ -306,20 +450,80 @@ def project_kpis(project_name):
     }
 
 
-st.sidebar.title("Navigation")
+st.sidebar.markdown("### 🧭 Navigation")
 page = st.sidebar.radio(
     "Choisir une page",
     ["Vue globale", "Suivi des distributions", "Qualité des données"],
+    label_visibility="collapsed",
 )
-selected_project = st.sidebar.selectbox("Projet", list(DATABASES.keys()))
+
+st.sidebar.divider()
+st.sidebar.markdown("### 📁 Projet")
+selected_project = st.sidebar.selectbox(
+    "Projet", list(DATABASES.keys()), label_visibility="collapsed"
+)
+
+st.sidebar.divider()
+st.sidebar.markdown("### 🗺️ Filtres géographiques")
+
+# Source de référence pour peupler les listes déroulantes en cascade.
+_location_source = load_registration(selected_project)
+if _location_source.empty:
+    _location_source = load_distribution_joined(selected_project)
+
+selected_region = st.sidebar.selectbox(
+    "Région",
+    ["Toutes les régions"] + sorted_options(_location_source, "region"),
+)
+
+_district_source = (
+    _location_source
+    if selected_region == "Toutes les régions"
+    else _location_source[
+        _location_source.get("region", pd.Series(dtype="object"))
+        .astype(str).str.strip() == selected_region
+    ]
+)
+selected_district = st.sidebar.selectbox(
+    "District",
+    ["Tous les districts"] + sorted_options(_district_source, "district"),
+)
+
+_commune_source = (
+    _district_source
+    if selected_district == "Tous les districts"
+    else _district_source[
+        _district_source.get("district", pd.Series(dtype="object"))
+        .astype(str).str.strip() == selected_district
+    ]
+)
+selected_commune = st.sidebar.selectbox(
+    "Commune",
+    ["Toutes les communes"] + sorted_options(_commune_source, "commune"),
+)
+
+if st.sidebar.button("↺ Réinitialiser les filtres"):
+    st.session_state.clear()
+    st.rerun()
 
 
 if page == "Vue globale":
-    metrics = project_kpis(selected_project)
+    metrics = project_kpis(
+        selected_project, selected_region, selected_district, selected_commune
+    )
     registration = metrics["registration"]
 
+    st.markdown(
+        f'<h2 class="crs-section-title">Vue globale — {selected_project}</h2>',
+        unsafe_allow_html=True,
+    )
+    st.caption(filter_caption(selected_region, selected_district, selected_commune))
+
     if registration.empty:
-        st.warning(f"Aucune donnée bénéficiaire disponible pour {selected_project}.")
+        st.warning(
+            f"Aucune donnée bénéficiaire disponible pour {selected_project} "
+            "avec les filtres sélectionnés."
+        )
         st.stop()
 
     sex_values = registration.get(
@@ -337,21 +541,21 @@ if page == "Vue globale":
         float(household_size.mean()) if household_size.notna().any() else 0.0
     )
 
-    st.subheader(f"Vue globale du projet {selected_project}")
+    st.markdown("##### 👥 Démographie")
+    row1 = st.columns(4)
+    row1[0].metric("Bénéficiaires uniques", f'{metrics["unique_beneficiaries"]:,}')
+    row1[1].metric("Hommes", f"{men:,}")
+    row1[2].metric("Femmes", f"{women:,}")
+    row1[3].metric("Taille moyenne du ménage", f"{household_mean:.1f}")
 
-    row1 = st.columns(5)
-    row1[0].metric("Projet", selected_project)
-    row1[1].metric("Bénéficiaires uniques", f'{metrics["unique_beneficiaries"]:,}')
-    row1[2].metric("Hommes", f"{men:,}")
-    row1[3].metric("Femmes", f"{women:,}")
-    row1[4].metric("Taille moyenne du ménage", f"{household_mean:.1f}")
-
+    st.markdown("##### 🌾 Agriculture &amp; distribution")
     row2 = st.columns(4)
     row2[0].metric("Bénéficiaires Agriculture/Farming", f'{metrics["agriculture_beneficiaries"]:,}')
     row2[1].metric("Présents aux distributions", f'{metrics["present_beneficiaries"]:,}')
     row2[2].metric("Absents aux distributions", f'{metrics["absent_beneficiaries"]:,}')
     row2[3].metric("Taux de présence", f'{metrics["presence_rate"]:.1f}%')
 
+    st.divider()
     left, right = st.columns(2)
 
     with left:
@@ -436,11 +640,21 @@ if page == "Vue globale":
 
 
 elif page == "Suivi des distributions":
-    dataframe = load_distribution_joined(selected_project)
+    st.markdown(
+        f'<h2 class="crs-section-title">Suivi des distributions — {selected_project}</h2>',
+        unsafe_allow_html=True,
+    )
+    st.caption(filter_caption(selected_region, selected_district, selected_commune))
+
+    dataframe = apply_location_filters(
+        load_distribution_joined(selected_project),
+        selected_region, selected_district, selected_commune,
+    )
 
     if dataframe.empty:
         st.info(
-            f"Le projet {selected_project} n'a pas encore de tables de distribution détaillées."
+            f"Le projet {selected_project} n'a pas de données de distribution "
+            "pour les filtres sélectionnés."
         )
         st.stop()
 
@@ -548,12 +762,21 @@ elif page == "Suivi des distributions":
 
 
 elif page == "Qualité des données":
+    st.markdown(
+        f'<h2 class="crs-section-title">Qualité des données — {selected_project}</h2>',
+        unsafe_allow_html=True,
+    )
+    st.caption(filter_caption(selected_region, selected_district, selected_commune))
+
     st.subheader("⚠️ Semences enregistrées dans CUMA")
     st.caption(
         "Contrôle informatif uniquement : aucun calcul de distribution n'est modifié."
     )
 
-    issues = get_seed_quality_issues(selected_project)
+    issues = apply_location_filters(
+        get_seed_quality_issues(selected_project),
+        selected_region, selected_district, selected_commune,
+    )
     if issues.empty:
         st.success("Aucune soumission avec cuma_type = Maïs/Mais ou Riz.")
     else:
@@ -619,12 +842,11 @@ elif page == "Qualité des données":
     numeric_columns = quality_dataframe.select_dtypes(include="number").columns.tolist()
     if numeric_columns:
         numeric_column = st.selectbox("Variable numérique", numeric_columns)
-        st.plotly_chart(
-            px.box(
-                quality_dataframe,
-                y=numeric_column,
-                points="outliers",
-                title=f"Valeurs aberrantes : {numeric_column}",
-            ),
-            use_container_width=True,
+        box_figure = px.box(
+            quality_dataframe,
+            y=numeric_column,
+            points="outliers",
+            title=f"Valeurs aberrantes : {numeric_column}",
         )
+        box_figure.update_traces(marker_color=CRS_COLORS["bold_blue"])
+        st.plotly_chart(box_figure, use_container_width=True)
