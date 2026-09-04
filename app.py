@@ -94,7 +94,7 @@ st.markdown(
     }}
     </style>
     <div class="crs-banner">
-        <h1>📊 Dashboard multi-projets</h1>
+        <h1>📊 Dashboard 137 • 137EST • 4101</h1>
         <p>Bases PostgreSQL : 137, 137est et 4101</p>
     </div>
     """,
@@ -460,7 +460,9 @@ page = st.sidebar.radio(
 st.sidebar.divider()
 st.sidebar.markdown("### 📁 Projet")
 selected_project = st.sidebar.selectbox(
-    "Projet", list(DATABASES.keys()), label_visibility="collapsed"
+    "Projet",
+    ["137", "137est", "4101"],
+    label_visibility="collapsed"
 )
 
 st.sidebar.divider()

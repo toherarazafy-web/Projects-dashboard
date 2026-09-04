@@ -11,4 +11,7 @@ DATABASES = {
     "4101": create_engine(
         st.secrets["DB_4101"]
     ),
+    "124": create_engine(
+        st.secrets["DB_124"]
+    ),
 }
