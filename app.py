@@ -390,6 +390,24 @@ def load_distribution_joined(project):
     return df
 
 
+
+@st.cache_data(ttl=1800)
+def load_agro_data(project):
+    """Charge public.da uniquement pour le projet 137est."""
+    if project != "137est":
+        return pd.DataFrame()
+
+    if not table_exists(project, "da"):
+        return pd.DataFrame()
+
+    with DATABASES[project].connect() as connection:
+        return pd.read_sql(
+            text(
+                f'SELECT * FROM public."da" LIMIT {MAX_ROWS}'
+            ),
+            connection,
+        )
+
 def project_kpis(
     project,
     region="Toutes les régions",
@@ -522,7 +540,12 @@ def compute_volet_metrics(df, name):
 st.sidebar.markdown("### 🧭 Navigation")
 page = st.sidebar.radio(
     "Choisir une page",
-    ["Vue globale", "Suivi des distributions", "Qualité des données"],
+    [
+        "Vue globale",
+        "Suivi des distributions",
+        "Suivi données agro",
+        "Qualité des données",
+    ],
     label_visibility="collapsed",
 )
 
@@ -534,9 +557,12 @@ project = st.sidebar.selectbox(
     label_visibility="collapsed",
 )
 
-source = load_registration(project)
-if source.empty:
-    source = load_distribution_joined(project)
+if page == "Suivi données agro":
+    source = load_agro_data(project)
+else:
+    source = load_registration(project)
+    if source.empty:
+        source = load_distribution_joined(project)
 
 region = st.sidebar.selectbox(
     "Région",
@@ -800,6 +826,175 @@ elif page == "Suivi des distributions":
     st.subheader("Détail des bénéficiaires")
     st.dataframe(
         volet_detail[detail_columns],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+elif page == "Suivi données agro":
+    st.markdown(
+        f'<h2 class="crs-section-title">Suivi données agro — {project}</h2>',
+        unsafe_allow_html=True,
+    )
+    st.caption(filter_caption(region, district, commune))
+
+    if project in {"137", "4101"}:
+        st.info("Pas de données disponibles pour le moment.")
+        st.stop()
+
+    agro_df = apply_location_filters(
+        load_agro_data(project),
+        region,
+        district,
+        commune,
+    )
+
+    if agro_df.empty:
+        st.info("Pas de données disponibles pour le moment.")
+        st.stop()
+
+    # Harmonisation des noms de spéculation avant les agrégations.
+    if "speculation" in agro_df.columns:
+        agro_df["speculation"] = (
+            agro_df["speculation"]
+            .astype("string")
+            .str.strip()
+        )
+        agro_df.loc[
+            agro_df["speculation"].str.upper().eq("RIZ X266").fillna(False),
+            "speculation",
+        ] = "Riz X265"
+
+    numeric_agro_columns = [
+        "quantite_semences_kg",
+        "superficie_prevue_are",
+        "superficie_emblavee_are",
+        "superficie_emblavee_ha",
+        "production_estimee_kg",
+    ]
+    for column in numeric_agro_columns:
+        if column in agro_df.columns:
+            agro_df[column] = pd.to_numeric(
+                agro_df[column],
+                errors="coerce",
+            )
+
+    household_count = (
+        int(agro_df["nom_code_menage"].dropna().astype(str).str.strip().nunique())
+        if "nom_code_menage" in agro_df.columns
+        else len(agro_df)
+    )
+    speculation_count = (
+        int(agro_df["speculation"].dropna().astype(str).str.strip().nunique())
+        if "speculation" in agro_df.columns
+        else 0
+    )
+    estimated_production = (
+        agro_df["production_estimee_kg"].fillna(0).sum()
+        if "production_estimee_kg" in agro_df.columns
+        else 0
+    )
+    planted_area_ha = (
+        agro_df["superficie_emblavee_ha"].fillna(0).sum()
+        if "superficie_emblavee_ha" in agro_df.columns
+        else 0
+    )
+
+    agro_kpi_columns = st.columns(4)
+    agro_kpi_columns[0].metric("Ménages suivis", f"{household_count:,}")
+    agro_kpi_columns[1].metric("Spéculations", f"{speculation_count:,}")
+    agro_kpi_columns[2].metric(
+        "Production estimée (kg)",
+        f"{estimated_production:,.0f}",
+    )
+    agro_kpi_columns[3].metric(
+        "Superficie emblavée (ha)",
+        f"{planted_area_ha:,.2f}",
+    )
+
+    if "speculation" in agro_df.columns:
+        spec_summary = (
+            agro_df.groupby("speculation", dropna=False)
+            .agg(
+                nb_beneficiaires=("speculation", "size"),
+                quantite_semences_kg=("quantite_semences_kg", "sum"),
+                superficie_emblavee_ha=("superficie_emblavee_ha", "sum"),
+                production_estimee_kg=("production_estimee_kg", "sum"),
+            )
+            .reset_index()
+            .fillna(0)
+        )
+
+        st.subheader("Résumé par spéculation")
+        st.dataframe(
+            spec_summary.rename(columns={
+                "speculation":"Spéculation",
+                "nb_beneficiaires":"Bénéficiaires",
+                "quantite_semences_kg":"Qté distribuée (kg)",
+                "superficie_emblavee_ha":"Superficie emblavée (ha)",
+                "production_estimee_kg":"Production estimée (kg)",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        production_chart = spec_summary.melt(
+            id_vars="speculation",
+            value_vars=[
+                "quantite_semences_kg",
+                "production_estimee_kg",
+            ],
+            var_name="Indicateur",
+            value_name="Valeur",
+        )
+
+        production_chart["Indicateur"] = production_chart["Indicateur"].replace({
+            "quantite_semences_kg": "Qté distribuée (kg)",
+            "production_estimee_kg": "Production estimée (kg)",
+        })
+
+        st.subheader("Quantité distribuée vs production estimée")
+        st.plotly_chart(
+            px.bar(
+                production_chart,
+                x="speculation",
+                y="Valeur",
+                color="Indicateur",
+                barmode="group",
+                text="Valeur",
+            ),
+            use_container_width=True,
+        )
+
+        st.subheader("Superficie emblavée (ha)")
+        st.plotly_chart(
+            px.bar(
+                spec_summary,
+                x="speculation",
+                y="superficie_emblavee_ha",
+                color="speculation",
+                text="superficie_emblavee_ha",
+            ),
+            use_container_width=True,
+        )
+
+        st.subheader("Nombre de bénéficiaires")
+        st.plotly_chart(
+            px.bar(
+                spec_summary,
+                x="speculation",
+                y="nb_beneficiaires",
+                color="speculation",
+                text="nb_beneficiaires",
+            ),
+            use_container_width=True,
+        )
+
+    st.subheader("Détail des données agro")
+    if "nom_code_menage" in agro_df.columns:
+        agro_df = agro_df.drop(columns=["nom_code_menage"])
+
+    st.dataframe(
+        agro_df,
         use_container_width=True,
         hide_index=True,
     )
