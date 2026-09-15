@@ -112,14 +112,14 @@ maize = pd.read_sql(
     text("""
     WITH dist AS (
         SELECT
-            ds.id,
+            ds.kobo_uuid,
             ds.mais_weight_kg,
             COUNT(DISTINCT db.id) AS nb_beneficiaires
         FROM distribution_submission ds
         LEFT JOIN distribution_beneficiary db
             ON db.submission_uuid = ds.kobo_uuid
         GROUP BY
-            ds.id,
+            ds.kobo_uuid,
             ds.mais_weight_kg
     )
     SELECT
@@ -286,14 +286,14 @@ resume_distribution = pd.read_sql(
     text("""
     WITH dist AS (
         SELECT
-            ds.id,
+            ds.kobo_uuid,
             ds.mais_weight_kg,
             COUNT(DISTINCT db.id) AS nb_beneficiaires
         FROM distribution_submission ds
         LEFT JOIN distribution_beneficiary db
             ON db.submission_uuid = ds.kobo_uuid
         GROUP BY
-            ds.id,
+            ds.kobo_uuid,
             ds.mais_weight_kg
     )
     SELECT
@@ -334,7 +334,6 @@ distribution_table = pd.read_sql(
     text("""
     WITH submission_stats AS (
         SELECT
-            ds.id,
             ds.kobo_uuid,
             ds.region,
             ds.district,
@@ -345,7 +344,6 @@ distribution_table = pd.read_sql(
         LEFT JOIN distribution_beneficiary db
             ON db.submission_uuid = ds.kobo_uuid
         GROUP BY
-            ds.id,
             ds.kobo_uuid,
             ds.region,
             ds.district,
