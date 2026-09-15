@@ -177,7 +177,8 @@ def compute_volet_metrics(df,name):
    d["Nb groupes distincts"]=a[group].nunique(dropna=True)
   else: total=a._q.sum(); n=int(a["unique_key"].nunique(dropna=True))
   d["n calculé"]=n; d["total calculé"]=float(total); debug.append(d)
-  unit = "kg" if q in ["mais_weight_kg", "rice_weight_kg", "groundnut_weight_kg"] else "unités"
+  UNIT_MAP={"mais_weight_kg":"kg","rice_weight_kg":"kg","groundnut_weight_kg":"kg","cassava_qty":"tiges","swpotato_qty":"lianes"}
+  unit = UNIT_MAP.get(q, "unités")
   rows.append({"Quantité":label,"Nombre bénéficiaires":n,"Total distribué":round(float(total),2),"Unité":unit})
  return {"qty_summary":pd.DataFrame(rows),"detail_df":volet,"type_col":cfg["type_col"],"debug":pd.DataFrame(debug)}
 
@@ -264,9 +265,11 @@ elif page=="Suivi données agro":
   spec_summary=agro_df.groupby("speculation",dropna=False).agg(**aggs).reset_index().fillna(0)
   for c in ["quantite_semences_kg","superficie_emblavee_ha","production_estimee_kg"]:
    if c not in spec_summary:spec_summary[c]=0
-  st.subheader("Résumé par spéculation");st.dataframe(spec_summary.rename(columns={"speculation":"Spéculation","nb_beneficiaires":"Bénéficiaires","quantite_semences_kg":"Qté distribuée (kg)","superficie_emblavee_ha":"Superficie emblavée (ha)","production_estimee_kg":"Production estimée (kg)"}),use_container_width=True,hide_index=True)
-  pc=spec_summary.melt(id_vars="speculation",value_vars=["quantite_semences_kg","production_estimee_kg"],var_name="Indicateur",value_name="Valeur");pc["Indicateur"]=pc["Indicateur"].replace({"quantite_semences_kg":"Qté distribuée (kg)","production_estimee_kg":"Production estimée (kg)"})
+  spec_summary["unite_qte"]=spec_summary["speculation"].astype(str).str.lower().str.contains("manioc|cassava",na=False).map({True:"tiges",False:"kg"})
+  st.subheader("Résumé par spéculation");st.dataframe(spec_summary.rename(columns={"speculation":"Spéculation","nb_beneficiaires":"Bénéficiaires","quantite_semences_kg":"Qté distribuée","unite_qte":"Unité qté distribuée","superficie_emblavee_ha":"Superficie emblavée (ha)","production_estimee_kg":"Production estimée (kg)"})[["Spéculation","Bénéficiaires","Qté distribuée","Unité qté distribuée","Production estimée (kg)","Superficie emblavée (ha)"]],use_container_width=True,hide_index=True)
+  pc=spec_summary.melt(id_vars="speculation",value_vars=["quantite_semences_kg","production_estimee_kg"],var_name="Indicateur",value_name="Valeur");pc["Indicateur"]=pc["Indicateur"].replace({"quantite_semences_kg":"Qté distribuée","production_estimee_kg":"Production estimée (kg)"})
   st.subheader("Quantité distribuée vs production estimée");st.plotly_chart(px.bar(pc,x="speculation",y="Valeur",color="Indicateur",barmode="group",text="Valeur"),use_container_width=True)
+  st.caption("Unité de la quantité distribuée : tiges pour le manioc, kg pour les autres cultures. La production estimée est toujours en kg.")
   st.subheader("Superficie emblavée (ha)");st.plotly_chart(px.bar(spec_summary,x="speculation",y="superficie_emblavee_ha",color="speculation",text="superficie_emblavee_ha"),use_container_width=True)
   st.subheader("Nombre de bénéficiaires");st.plotly_chart(px.bar(spec_summary,x="speculation",y="nb_beneficiaires",color="speculation",text="nb_beneficiaires"),use_container_width=True)
  st.subheader("Détail des données agro")
