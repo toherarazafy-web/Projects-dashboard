@@ -107,7 +107,7 @@ pms = pd.read_sql(
 )
 
 # La quantité de maïs est enregistrée par bénéficiaire dans la soumission.
-# Total = quantité par bénéficiaire x nombre de bénéficiaires liés par parent_id.
+# Total = quantité par bénéficiaire x nombre de bénéficiaires liés par submission_uuid/kobo_uuid.
 maize = pd.read_sql(
     text("""
     WITH dist AS (
@@ -117,7 +117,7 @@ maize = pd.read_sql(
             COUNT(DISTINCT db.id) AS nb_beneficiaires
         FROM distribution_submission ds
         LEFT JOIN distribution_beneficiary db
-            ON db.parent_id = ds.id
+            ON db.submission_uuid = ds.kobo_uuid
         GROUP BY
             ds.id,
             ds.mais_weight_kg
@@ -291,7 +291,7 @@ resume_distribution = pd.read_sql(
             COUNT(DISTINCT db.id) AS nb_beneficiaires
         FROM distribution_submission ds
         LEFT JOIN distribution_beneficiary db
-            ON db.parent_id = ds.id
+            ON db.submission_uuid = ds.kobo_uuid
         GROUP BY
             ds.id,
             ds.mais_weight_kg
@@ -332,41 +332,66 @@ st.subheader("🚚 Distributions par région, district et commune")
 # quantité de la soumission après la jointure avec les bénéficiaires.
 distribution_table = pd.read_sql(
     text("""
-    WITH dist AS (
+    WITH submission_stats AS (
         SELECT
             ds.id,
+            ds.kobo_uuid,
             ds.region,
             ds.district,
             ds.commune,
             ds.mais_weight_kg,
-            COUNT(DISTINCT db.id) AS nb_beneficiaires,
-            COUNT(DISTINCT db.pms_id) AS nb_pms
+            COUNT(DISTINCT db.id) AS nb_beneficiaires
         FROM distribution_submission ds
         LEFT JOIN distribution_beneficiary db
-            ON db.parent_id = ds.id
+            ON db.submission_uuid = ds.kobo_uuid
         GROUP BY
             ds.id,
+            ds.kobo_uuid,
             ds.region,
             ds.district,
             ds.commune,
             ds.mais_weight_kg
+    ),
+    location_totals AS (
+        SELECT
+            region,
+            district,
+            commune,
+            COUNT(*) AS nb_soumissions,
+            ROUND(
+                SUM(
+                    COALESCE(mais_weight_kg, 0)
+                    * COALESCE(nb_beneficiaires, 0)
+                )::numeric,
+                2
+            ) AS kg_mais
+        FROM submission_stats
+        GROUP BY region, district, commune
+    ),
+    location_pms AS (
+        SELECT
+            ds.region,
+            ds.district,
+            ds.commune,
+            COUNT(DISTINCT db.pms_id) AS nb_pms
+        FROM distribution_submission ds
+        LEFT JOIN distribution_beneficiary db
+            ON db.submission_uuid = ds.kobo_uuid
+        GROUP BY ds.region, ds.district, ds.commune
     )
     SELECT
-        region,
-        district,
-        commune,
-        COUNT(*) AS nb_soumissions,
-        SUM(nb_pms) AS nb_pms,
-        ROUND(
-            SUM(
-                COALESCE(mais_weight_kg, 0)
-                * COALESCE(nb_beneficiaires, 0)
-            )::numeric,
-            2
-        ) AS kg_mais
-    FROM dist
-    GROUP BY region, district, commune
-    ORDER BY region, district, commune
+        lt.region,
+        lt.district,
+        lt.commune,
+        lt.nb_soumissions,
+        COALESCE(lp.nb_pms, 0) AS nb_pms,
+        lt.kg_mais
+    FROM location_totals lt
+    LEFT JOIN location_pms lp
+        ON lp.region IS NOT DISTINCT FROM lt.region
+       AND lp.district IS NOT DISTINCT FROM lt.district
+       AND lp.commune IS NOT DISTINCT FROM lt.commune
+    ORDER BY lt.region, lt.district, lt.commune
     """),
     engine,
 )
