@@ -8,12 +8,12 @@ from connections import DATABASES
 st.set_page_config(page_title="Dashboard multi-projets", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 CRS_COLORS={"bold_blue":"#00A2C7","crs_blue":"#00468B","bold_purple":"#9053A1","bold_teal":"#0099A9","bold_green":"#79A02C","bold_orange":"#EF6E0B","humble_gray":"#9D9385","humble_blue":"#7A99AC","humble_green":"#9B9455","humble_gold":"#B48F4B"}
 px.defaults.color_discrete_sequence=list(CRS_COLORS.values()); px.defaults.template="plotly_white"
-st.markdown(f"""<style>section[data-testid="stSidebar"]{{background:#F4F8FA;border-right:3px solid {CRS_COLORS['crs_blue']}}}div[data-testid="stMetric"]{{background:#FFF;border:1px solid #E4EBEE;border-left:5px solid {CRS_COLORS['bold_blue']};border-radius:8px;padding:.75rem 1rem}}.crs-banner{{background:{CRS_COLORS['crs_blue']};padding:1.1rem 1.5rem;border-radius:10px;color:white}}.crs-section-title{{color:{CRS_COLORS['crs_blue']};border-bottom:3px solid {CRS_COLORS['bold_orange']};display:inline-block}}</style><div class="crs-banner"><h1>📊 Dashboard 137 • 137EST • 4101</h1><p>Bases PostgreSQL : 137, 137est et 4101</p></div>""",unsafe_allow_html=True)
+st.markdown(f'''<style>section[data-testid="stSidebar"]{{background:#F4F8FA;border-right:3px solid {CRS_COLORS['crs_blue']};}}div[data-testid="stMetric"]{{background:#FFF;border:1px solid #E4EBEE;border-left:5px solid {CRS_COLORS['bold_blue']};border-radius:8px;padding:.75rem 1rem;box-shadow:0 1px 3px rgba(0,0,0,.06);}}div[data-testid="stMetricValue"]{{color:{CRS_COLORS['crs_blue']};}}.crs-banner{{background:{CRS_COLORS['crs_blue']};padding:1.1rem 1.5rem;border-radius:10px;margin-bottom:1.2rem;color:white;}}.crs-banner h1{{margin:0;font-size:1.7rem;}}.crs-banner p{{color:#CCE4F5;margin:.2rem 0 0;}}.crs-section-title{{color:{CRS_COLORS['crs_blue']};border-bottom:3px solid {CRS_COLORS['bold_orange']};display:inline-block;}}</style><div class="crs-banner"><h1>📊 Dashboard 137 • 137EST • 4101</h1><p>Bases PostgreSQL : 137, 137est et 4101</p></div>''',unsafe_allow_html=True)
 MAX_ROWS=50000
 PRESENT_VALUES={"yes","true","t","1","oui","o"}
-AGRI_CATEGORIES={p:{"farming"} for p in ["137","137est","4101"]}
+AGRI_CATEGORIES={"4101":{"farming"},"137est":{"farming"},"137":{"farming"}}
 VOLET_CONFIG={
- "Semences / intrants agricoles":{"date_col":"agri_date","type_col":"agri_input_type","qty_cols":[("mais_weight_kg","kg de maïs"),("rice_weight_kg","kg de riz"),("groundnut_weight_kg","kg d'arachide"),("swpotato_qty","lianes de patate douce")]},
+ "Semences / intrants agricoles":{"date_col":"agri_date","type_col":"agri_input_type","qty_cols":[("mais_weight_kg","kg de maïs"),("rice_weight_kg","kg de riz"),("groundnut_weight_kg","kg d'arachide"),("cassava_qty","tiges de manioc"),("swpotato_qty","lianes de patate douce")]},
  "CUMA (cultures maraîchères)":{"date_col":"cuma_date","type_col":"cuma_type","qty_cols":[("cuma_weight_kg","sachets")]},
  "Kit PMA (petit matériel)":{"date_col":"pma_date","type_col":"pma_type","qty_cols":[("arrosoir_nb","arrosoirs"),("beche_nb","bêches")]}}
 
@@ -21,9 +21,9 @@ def normalize_text(v):
  if pd.isna(v): return ""
  v=unicodedata.normalize("NFKD",str(v).strip().lower()); return "".join(c for c in v if not unicodedata.combining(c))
 def make_unique_key(df,cin_col,name_col,age_col=None):
- cin=df[cin_col].fillna("").astype(str).str.strip() if cin_col in df else pd.Series("",index=df.index)
- name=df[name_col].fillna("").astype(str).str.strip().str.upper() if name_col in df else pd.Series("",index=df.index)
- age=pd.to_numeric(df[age_col],errors="coerce").apply(lambda x:"" if pd.isna(x) else str(int(x))) if age_col in df else pd.Series("",index=df.index)
+ cin=df[cin_col].fillna("").astype(str).str.strip() if cin_col in df else pd.Series("",index=df.index,dtype="object")
+ name=df[name_col].fillna("").astype(str).str.strip().str.upper() if name_col in df else pd.Series("",index=df.index,dtype="object")
+ age=pd.to_numeric(df[age_col],errors="coerce").apply(lambda x:"" if pd.isna(x) else str(int(x))) if age_col and age_col in df else pd.Series("",index=df.index,dtype="object")
  return (name+"|"+cin+"|"+age).mask((cin=="")&(name=="")&(age==""))
 def table_exists(project,table): return table in inspect(DATABASES[project]).get_table_names(schema="public")
 def columns(project,table): return [c["name"] for c in inspect(DATABASES[project]).get_columns(table,schema="public")] if table_exists(project,table) else []
@@ -46,7 +46,7 @@ def load_registration(project):
  table="beneficiary_registration"; wanted=["ben_cin","ben_full_name","ben_sex","ben_age","hh_size","project_outcome","region","district","commune","fokontany"]
  selected=[c for c in wanted if c in columns(project,table)]
  if not selected:return pd.DataFrame()
- with DATABASES[project].connect() as con: df=pd.read_sql(text("SELECT "+",".join(f'"{c}"' for c in selected)+f' FROM public."{table}"'),con)
+ with DATABASES[project].connect() as con: df=pd.read_sql(text("SELECT "+",".join(f'\"{c}\"' for c in selected)+f' FROM public.\"{table}\"'),con)
  df["unique_key"]=make_unique_key(df,"ben_cin","ben_full_name","ben_age"); return df
 
 @st.cache_data(ttl=1800)
@@ -54,7 +54,7 @@ def load_distribution_joined(project):
  stbl,btbl="distribution_submission","distribution_beneficiary"
  if not(table_exists(project,stbl) and table_exists(project,btbl)):return pd.DataFrame()
  sc,bc=columns(project,stbl),columns(project,btbl)
- sw=["id","kobo_uuid","submission_time","submitted_by","region","district","commune","fokontany","project_code","sector","cuma_date","cuma_type","cuma_weight_kg","agri_date","agri_input_type","mais_weight_kg","rice_weight_kg","groundnut_weight_kg","swpotato_qty","swpotato_unit","pma_date","pma_type","arrosoir_nb","beche_nb","nb_beneficiaries","distribution_date","agri_input_codes","rice_weight","groundnut_weight","declared_beneficiary_count","repeat_beneficiary_count","registration_number","enumerator_name","enumerator_org","agri_type"]
+ sw=["id","kobo_uuid","submission_time","submitted_by","region","district","commune","fokontany","project_code","sector","cuma_date","cuma_type","cuma_weight_kg","agri_date","agri_input_type","mais_weight_kg","rice_weight_kg","groundnut_weight_kg","cassava_qty","cassava_unit","swpotato_qty","swpotato_unit","pma_date","pma_type","arrosoir_nb","beche_nb","nb_beneficiaries","distribution_date","agri_input_codes","rice_weight","groundnut_weight","declared_beneficiary_count","repeat_beneficiary_count","registration_number","enumerator_name","enumerator_org","agri_type"]
  bw=["id","parent_id","seq_num","present","village","full_name","sex","age","cin","ben_id_raw","submission_uuid","distribution_uuid","repeat_index","sequence_number","beneficiary_presence","beneficiary_id_raw","beneficiary_location","beneficiary_name","beneficiary_code","beneficiary_sex","beneficiary_age","beneficiary_cin","c3_raw"]
  sp=[('ds."id" AS "submission_id"' if c=="id" else f'ds."{c}"') for c in sw if c in sc]
  sp += [('db."id" AS "beneficiary_row_id"' if c=="id" else f'db."{c}"') for c in bw if c in bc]
@@ -62,8 +62,7 @@ def load_distribution_joined(project):
  elif "distribution_uuid" in bc and "kobo_uuid" in sc: join='db."distribution_uuid"=ds."kobo_uuid"'
  elif "submission_uuid" in bc and "kobo_uuid" in sc: join='db."submission_uuid"=ds."kobo_uuid"'
  else:return pd.DataFrame()
- sql=f'SELECT {",".join(sp)} FROM public."{stbl}" ds INNER JOIN public."{btbl}" db ON {join}'
- with DATABASES[project].connect() as con: df=pd.read_sql(text(sql),con)
+ with DATABASES[project].connect() as con: df=pd.read_sql(text(f'SELECT {",".join(sp)} FROM public."{stbl}" ds INNER JOIN public."{btbl}" db ON {join}'),con)
  mp={"distribution_uuid":"submission_uuid","repeat_index":"seq_num","beneficiary_presence":"present","beneficiary_id_raw":"ben_id_raw","beneficiary_location":"village","beneficiary_name":"full_name","beneficiary_sex":"sex","beneficiary_age":"age","beneficiary_cin":"cin","distribution_date":"agri_date","agri_input_codes":"agri_input_type","rice_weight":"rice_weight_kg","groundnut_weight":"groundnut_weight_kg"}
  df=df.rename(columns={s:t for s,t in mp.items() if s in df and t not in df})
  for c in ["submission_id","parent_id","submission_uuid","kobo_uuid"]:
@@ -72,15 +71,15 @@ def load_distribution_joined(project):
 
 @st.cache_data(ttl=1800)
 def load_agro_data(project):
- if project!="137est" or not table_exists(project,"da"):return pd.DataFrame()
+ if project!="137est" or not table_exists(project,"da"): return pd.DataFrame()
  with DATABASES[project].connect() as con:return pd.read_sql(text(f'SELECT * FROM public."da" LIMIT {MAX_ROWS}'),con)
 
 def project_kpis(project,r="Toutes les régions",d="Tous les districts",c="Toutes les communes"):
  reg=apply_location_filters(load_registration(project),r,d,c); dist=apply_location_filters(load_distribution_joined(project),r,d,c)
- unique=int(reg["unique_key"].nunique()) if not reg.empty else 0
- farming=set(reg.loc[reg["project_outcome"].map(normalize_text).isin(AGRI_CATEGORIES[project]),"unique_key"].dropna()) if "project_outcome" in reg else set()
- present=int(dist.loc[dist["present"].map(normalize_text).isin(PRESENT_VALUES),"unique_key"].nunique()) if "present" in dist else 0
- return {"registration":reg,"unique_beneficiaries":unique,"agriculture_beneficiaries":len(farming),"present_beneficiaries":present,"absent_beneficiaries":max(0,len(farming)-present),"presence_rate":present/len(farming)*100 if farming else 0}
+ unique=int(reg["unique_key"].nunique(dropna=True)) if not reg.empty else 0
+ farming=set(reg.loc[reg["project_outcome"].map(normalize_text).isin(AGRI_CATEGORIES.get(project,{"farming"})),"unique_key"].dropna()) if "project_outcome" in reg else set()
+ present=int(dist.loc[dist["present"].map(normalize_text).isin(PRESENT_VALUES),"unique_key"].nunique(dropna=True)) if "present" in dist else 0
+ return {"registration":reg,"distribution":dist,"unique_beneficiaries":unique,"agriculture_beneficiaries":len(farming),"present_beneficiaries":present,"absent_beneficiaries":max(0,len(farming)-present),"presence_rate":present/len(farming)*100 if farming else 0}
 
 def compute_volet_metrics(df,name):
  cfg=VOLET_CONFIG[name]; date=cfg["date_col"]
@@ -95,8 +94,9 @@ def compute_volet_metrics(df,name):
   if a.empty:continue
   if group and bid:
    s=a.groupby(group,dropna=False).agg(q=("_q","first"),n=(bid,"nunique")); total=(s.q*s.n).sum(); n=int(s.n.sum())
-  else: total=a._q.sum(); n=int(a["unique_key"].nunique())
-  rows.append({"Quantité":label,"Nombre bénéficiaires":n,"Total distribué":round(float(total),2)})
+  else: total=a._q.sum(); n=int(a["unique_key"].nunique(dropna=True))
+  unit = "kg" if q in ["mais_weight_kg", "rice_weight_kg", "groundnut_weight_kg"] else "unités"
+  rows.append({"Quantité":label,"Nombre bénéficiaires":n,"Total distribué":round(float(total),2),"Unité":unit})
  return {"qty_summary":pd.DataFrame(rows),"detail_df":volet,"type_col":cfg["type_col"]}
 
 st.sidebar.markdown("### 🧭 Navigation")
@@ -104,8 +104,8 @@ page=st.sidebar.radio("Choisir une page",["Vue globale","Suivi des distributions
 st.sidebar.divider();st.sidebar.markdown("### 📁 Projet");project=st.sidebar.selectbox("Projet",["137","137est","4101"],label_visibility="collapsed")
 source=load_agro_data(project) if page=="Suivi données agro" else load_registration(project)
 if source.empty and page!="Suivi données agro":source=load_distribution_joined(project)
-region=st.sidebar.selectbox("Région",["Toutes les régions"]+sorted_options(source,"region")); rs=source if region=="Toutes les régions" or "region" not in source else source[source.region.astype(str).str.strip()==region]
-district=st.sidebar.selectbox("District",["Tous les districts"]+sorted_options(rs,"district")); ds=rs if district=="Tous les districts" or "district" not in rs else rs[rs.district.astype(str).str.strip()==district]
+region=st.sidebar.selectbox("Région",["Toutes les régions"]+sorted_options(source,"region")); rs=source if region=="Toutes les régions" or "region" not in source else source[source["region"].astype(str).str.strip()==region]
+district=st.sidebar.selectbox("District",["Tous les districts"]+sorted_options(rs,"district")); ds=rs if district=="Tous les districts" or "district" not in rs else rs[rs["district"].astype(str).str.strip()==district]
 commune=st.sidebar.selectbox("Commune",["Toutes les communes"]+sorted_options(ds,"commune"))
 if st.sidebar.button("↺ Réinitialiser les filtres"):st.cache_data.clear();st.session_state.clear();st.rerun()
 
@@ -113,10 +113,11 @@ if page=="Vue globale":
  m=project_kpis(project,region,district,commune); reg=m["registration"]
  st.markdown(f'<h2 class="crs-section-title">Vue globale — {project}</h2>',unsafe_allow_html=True);st.caption(filter_caption(region,district,commune))
  if reg.empty:st.warning("Aucune donnée bénéficiaire avec les filtres sélectionnés.");st.stop()
- sex=reg.get("ben_sex",pd.Series(index=reg.index,dtype="object")).map(normalize_text);men=int(sex.isin(["male","m","homme","masculin"]).sum());women=int(sex.isin(["female","f","femme","feminin"]).sum());hh=pd.to_numeric(reg.get("hh_size",pd.Series(dtype=float)),errors="coerce")
- vals=[m["unique_beneficiaries"],men,women,hh.mean() if hh.notna().any() else 0]
- for b,l,v in zip(st.columns(4),["Bénéficiaires uniques","Hommes","Femmes","Taille moyenne du ménage"],vals):b.metric(l,f"{v:,.1f}" if l.startswith("Taille") else f"{v:,}")
+ sex=reg.get("ben_sex",pd.Series(index=reg.index,dtype="object")).map(normalize_text); men=int(sex.isin(["male","m","homme","masculin"]).sum()); women=int(sex.isin(["female","f","femme","feminin"]).sum()); hh=pd.to_numeric(reg.get("hh_size",pd.Series(dtype=float)),errors="coerce")
+ for b,l,v in zip(st.columns(4),["Bénéficiaires uniques","Hommes","Femmes","Taille moyenne du ménage"],[m["unique_beneficiaries"],men,women,hh.mean() if hh.notna().any() else 0]):b.metric(l,f"{v:,.1f}" if l.startswith("Taille") else f"{v:,}")
  for b,l,k in zip(st.columns(4),["Bénéficiaires Agriculture/Farming","Présents aux distributions","Absents aux distributions","Taux de présence"],["agriculture_beneficiaries","present_beneficiaries","absent_beneficiaries","presence_rate"]):b.metric(l,f'{m[k]:.1f}%' if k=="presence_rate" else f'{m[k]:,}')
+ if "project_outcome" in reg:
+  ot=reg.assign(Catégorie=reg["project_outcome"].fillna("Non renseigné")).groupby("Catégorie")["unique_key"].nunique().reset_index(name="Bénéficiaires uniques");st.dataframe(ot,use_container_width=True,hide_index=True);st.plotly_chart(px.bar(ot,x="Catégorie",y="Bénéficiaires uniques",color="Catégorie",text="Bénéficiaires uniques"),use_container_width=True)
 
 elif page=="Suivi des distributions":
  d=apply_location_filters(load_distribution_joined(project),region,district,commune)
@@ -124,21 +125,47 @@ elif page=="Suivi des distributions":
  if d.empty:st.info("Aucune donnée de distribution.");st.stop()
  available=[n for n,c in VOLET_CONFIG.items() if c["date_col"] in d and d[c["date_col"]].notna().any()]
  if not available:st.info("Aucun volet de distribution ne contient de données.");st.stop()
- vm=compute_volet_metrics(d,st.selectbox("Type de distribution",available));detail=vm["detail_df"]
+ vm=compute_volet_metrics(d,st.selectbox("Type de distribution",available)); detail=vm["detail_df"]
  st.dataframe(vm["qty_summary"],use_container_width=True,hide_index=True)
  if not vm["qty_summary"].empty:st.plotly_chart(px.bar(vm["qty_summary"],x="Quantité",y="Total distribué",text="Total distribué"),use_container_width=True)
- cols=[c for c in ["submission_id","parent_id","submission_uuid","beneficiary_row_id","seq_num","sequence_number","present","village","full_name","beneficiary_code","sex","age","cin","agri_date","agri_input_type","mais_weight_kg","rice_weight_kg","groundnut_weight_kg","swpotato_qty","cuma_type","cuma_weight_kg"] if c in detail]
+ cols=[c for c in ["submission_id","parent_id","submission_uuid","beneficiary_row_id","seq_num","sequence_number","present","village","full_name","beneficiary_code","sex","age","cin","agri_date","agri_input_type","mais_weight_kg","rice_weight_kg","groundnut_weight_kg","cassava_qty","cassava_unit","swpotato_qty","swpotato_unit","cuma_type","cuma_weight_kg"] if c in detail]
  st.subheader("Détail des bénéficiaires");st.dataframe(detail[cols],use_container_width=True,hide_index=True)
 
 elif page=="Suivi données agro":
- agro=apply_location_filters(load_agro_data(project),region,district,commune)
- st.markdown(f'<h2 class="crs-section-title">Suivi données agro — {project}</h2>',unsafe_allow_html=True)
- if agro.empty:st.info("Pas de données disponibles pour le moment.");st.stop()
- if "nom_code_menage" in agro:agro=agro.drop(columns=["nom_code_menage"])
- st.dataframe(agro,use_container_width=True,hide_index=True)
+ st.markdown(f'<h2 class="crs-section-title">Suivi données agro — {project}</h2>',unsafe_allow_html=True);st.caption(filter_caption(region,district,commune))
+ if project in {"137","4101"}:st.info("Pas de données disponibles pour le moment.");st.stop()
+ agro_df=apply_location_filters(load_agro_data(project),region,district,commune)
+ if agro_df.empty:st.info("Pas de données disponibles pour le moment.");st.stop()
+ if "speculation" in agro_df:
+  agro_df["speculation"]=agro_df["speculation"].astype("string").str.strip(); agro_df.loc[agro_df["speculation"].str.upper().eq("RIZ X266").fillna(False),"speculation"]="Riz X265"
+ numeric_cols=["quantite_semences_kg","superficie_prevue_are","superficie_emblavee_are","superficie_emblavee_ha","production_estimee_kg"]
+ for col in numeric_cols:
+  if col in agro_df:agro_df[col]=pd.to_numeric(agro_df[col],errors="coerce")
+ household_count=int(agro_df["nom_code_menage"].dropna().astype(str).str.strip().nunique()) if "nom_code_menage" in agro_df else len(agro_df)
+ speculation_count=int(agro_df["speculation"].dropna().astype(str).str.strip().nunique()) if "speculation" in agro_df else 0
+ production=agro_df["production_estimee_kg"].fillna(0).sum() if "production_estimee_kg" in agro_df else 0
+ area=agro_df["superficie_emblavee_ha"].fillna(0).sum() if "superficie_emblavee_ha" in agro_df else 0
+ for b,l,v,f in zip(st.columns(4),["Ménages suivis","Spéculations","Production estimée (kg)","Superficie emblavée (ha)"],[household_count,speculation_count,production,area],[",",",",",.0f",",.2f"]):b.metric(l,format(v,f))
+ if "speculation" in agro_df:
+  aggs={"nb_beneficiaires":("speculation","size")}
+  for c in ["quantite_semences_kg","superficie_emblavee_ha","production_estimee_kg"]:
+   if c in agro_df:aggs[c]=(c,"sum")
+  spec_summary=agro_df.groupby("speculation",dropna=False).agg(**aggs).reset_index().fillna(0)
+  for c in ["quantite_semences_kg","superficie_emblavee_ha","production_estimee_kg"]:
+   if c not in spec_summary:spec_summary[c]=0
+  st.subheader("Résumé par spéculation");st.dataframe(spec_summary.rename(columns={"speculation":"Spéculation","nb_beneficiaires":"Bénéficiaires","quantite_semences_kg":"Qté distribuée (kg)","superficie_emblavee_ha":"Superficie emblavée (ha)","production_estimee_kg":"Production estimée (kg)"}),use_container_width=True,hide_index=True)
+  pc=spec_summary.melt(id_vars="speculation",value_vars=["quantite_semences_kg","production_estimee_kg"],var_name="Indicateur",value_name="Valeur");pc["Indicateur"]=pc["Indicateur"].replace({"quantite_semences_kg":"Qté distribuée (kg)","production_estimee_kg":"Production estimée (kg)"})
+  st.subheader("Quantité distribuée vs production estimée");st.plotly_chart(px.bar(pc,x="speculation",y="Valeur",color="Indicateur",barmode="group",text="Valeur"),use_container_width=True)
+  st.subheader("Superficie emblavée (ha)");st.plotly_chart(px.bar(spec_summary,x="speculation",y="superficie_emblavee_ha",color="speculation",text="superficie_emblavee_ha"),use_container_width=True)
+  st.subheader("Nombre de bénéficiaires");st.plotly_chart(px.bar(spec_summary,x="speculation",y="nb_beneficiaires",color="speculation",text="nb_beneficiaires"),use_container_width=True)
+ st.subheader("Détail des données agro")
+ if "nom_code_menage" in agro_df:agro_df=agro_df.drop(columns=["nom_code_menage"])
+ st.dataframe(agro_df,use_container_width=True,hide_index=True)
+
 else:
- tables=inspect(DATABASES[project]).get_table_names(schema="public");t=st.selectbox("Table à contrôler",tables)
- with DATABASES[project].connect() as con:q=pd.read_sql(text(f'SELECT * FROM public."{t}" LIMIT {MAX_ROWS}'),con)
+ st.markdown(f'<h2 class="crs-section-title">Qualité des données — {project}</h2>',unsafe_allow_html=True)
+ tables=inspect(DATABASES[project]).get_table_names(schema="public"); selected=st.selectbox("Table à contrôler",tables)
+ with DATABASES[project].connect() as con:q=pd.read_sql(text(f'SELECT * FROM public."{selected}" LIMIT {MAX_ROWS}'),con)
  a,b=st.columns(2);a.metric("Lignes analysées",len(q));b.metric("Doublons complets",int(q.duplicated().sum()))
  nums=q.select_dtypes(include="number").columns.tolist()
  if nums:
