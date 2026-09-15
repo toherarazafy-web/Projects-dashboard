@@ -20,11 +20,63 @@ VOLET_CONFIG={
 def normalize_text(v):
  if pd.isna(v): return ""
  v=unicodedata.normalize("NFKD",str(v).strip().lower()); return "".join(c for c in v if not unicodedata.combining(c))
-def make_unique_key(df,cin_col,name_col,age_col=None):
- cin=df[cin_col].fillna("").astype(str).str.strip() if cin_col in df else pd.Series("",index=df.index,dtype="object")
- name=df[name_col].fillna("").astype(str).str.strip().str.upper() if name_col in df else pd.Series("",index=df.index,dtype="object")
- age=pd.to_numeric(df[age_col],errors="coerce").apply(lambda x:"" if pd.isna(x) else str(int(x))) if age_col and age_col in df else pd.Series("",index=df.index,dtype="object")
- return (name+"|"+cin+"|"+age).mask((cin=="")&(name=="")&(age==""))
+def make_unique_key(df, cin_col, name_col, age_col=None):
+
+ cin = (
+  df[cin_col]
+  .fillna("")
+  .astype("string")
+  .str.strip()
+  if cin_col in df.columns
+  else pd.Series("", index=df.index, dtype="string")
+ )
+
+ name = (
+  df[name_col]
+  .fillna("")
+  .astype("string")
+  .str.strip()
+  .str.upper()
+  if name_col in df.columns
+  else pd.Series("", index=df.index, dtype="string")
+ )
+
+ if age_col and age_col in df.columns:
+
+  age = (
+   pd.to_numeric(
+    df[age_col],
+    errors="coerce"
+   )
+   .apply(
+    lambda x: ""
+    if pd.isna(x)
+    else str(int(x))
+   )
+   .astype("string")
+  )
+
+ else:
+
+  age = pd.Series(
+   "",
+   index=df.index,
+   dtype="string",
+  )
+
+ key = (
+  name.fillna("")
+  + "|"
+  + cin.fillna("")
+  + "|"
+  + age.fillna("")
+ )
+
+ return key.mask(
+  (cin == "")
+  & (name == "")
+  & (age == "")
+ )
 def table_exists(project,table): return table in inspect(DATABASES[project]).get_table_names(schema="public")
 def columns(project,table): return [c["name"] for c in inspect(DATABASES[project]).get_columns(table,schema="public")] if table_exists(project,table) else []
 def sorted_options(df,col):
@@ -58,21 +110,43 @@ def load_distribution_joined(project):
  bw=["id","parent_id","seq_num","present","village","full_name","sex","age","cin","ben_id_raw","submission_uuid","distribution_uuid","repeat_index","sequence_number","beneficiary_presence","beneficiary_id_raw","beneficiary_location","beneficiary_name","beneficiary_code","beneficiary_sex","beneficiary_age","beneficiary_cin","c3_raw"]
  sp=[('ds."id" AS "submission_id"' if c=="id" else f'ds."{c}"') for c in sw if c in sc]
  sp += [('db."id" AS "beneficiary_row_id"' if c=="id" else f'db."{c}"') for c in bw if c in bc]
- if "parent_id" in bc and "id" in sc: join='db."parent_id"=ds."id"'
- elif "distribution_uuid" in bc and "kobo_uuid" in sc: join='db."distribution_uuid"=ds."kobo_uuid"'
- elif "submission_uuid" in bc and "kobo_uuid" in sc: join='db."submission_uuid"=ds."kobo_uuid"'
+ if "parent_id" in bc and "id" in sc: join='db."parent_id"::text=ds."id"::text'
+ elif "distribution_uuid" in bc and "kobo_uuid" in sc: join='db."distribution_uuid"::text=ds."kobo_uuid"::text'
+ elif "submission_uuid" in bc and "kobo_uuid" in sc: join='db."submission_uuid"::text=ds."kobo_uuid"::text'
  else:return pd.DataFrame()
  with DATABASES[project].connect() as con: df=pd.read_sql(text(f'SELECT {",".join(sp)} FROM public."{stbl}" ds INNER JOIN public."{btbl}" db ON {join}'),con)
  mp={"distribution_uuid":"submission_uuid","repeat_index":"seq_num","beneficiary_presence":"present","beneficiary_id_raw":"ben_id_raw","beneficiary_location":"village","beneficiary_name":"full_name","beneficiary_sex":"sex","beneficiary_age":"age","beneficiary_cin":"cin","distribution_date":"agri_date","agri_input_codes":"agri_input_type","rice_weight":"rice_weight_kg","groundnut_weight":"groundnut_weight_kg"}
  df=df.rename(columns={s:t for s,t in mp.items() if s in df and t not in df})
  for c in ["submission_id","parent_id","submission_uuid","kobo_uuid"]:
   if c in df: df["submission_group_id"]=df[c]; break
+ if "submission_uuid" in df and "seq_num" in df:
+  df["beneficiary_seq_key"]=df["submission_uuid"].astype(str)+"|"+df["seq_num"].astype(str)
  df["unique_key"]=make_unique_key(df,"cin","full_name","age"); return df
 
 @st.cache_data(ttl=1800)
 def load_agro_data(project):
  if project!="137est" or not table_exists(project,"da"): return pd.DataFrame()
  with DATABASES[project].connect() as con:return pd.read_sql(text(f'SELECT * FROM public."da" LIMIT {MAX_ROWS}'),con)
+
+def diagnose_distribution(project):
+ stbl,btbl="distribution_submission","distribution_beneficiary"
+ info={"s_exists":table_exists(project,stbl),"b_exists":table_exists(project,btbl)}
+ if not(info["s_exists"] and info["b_exists"]):return info
+ sc,bc=columns(project,stbl),columns(project,btbl); info["sc"]=sc; info["bc"]=bc
+ with DATABASES[project].connect() as con:
+  info["s_rows"]=con.execute(text(f'SELECT COUNT(*) FROM public."{stbl}"')).scalar()
+  info["b_rows"]=con.execute(text(f'SELECT COUNT(*) FROM public."{btbl}"')).scalar()
+ if "parent_id" in bc and "id" in sc: info["join_key"]='distribution_beneficiary.parent_id = distribution_submission.id'
+ elif "distribution_uuid" in bc and "kobo_uuid" in sc: info["join_key"]='distribution_beneficiary.distribution_uuid = distribution_submission.kobo_uuid'
+ elif "submission_uuid" in bc and "kobo_uuid" in sc: info["join_key"]='distribution_beneficiary.submission_uuid = distribution_submission.kobo_uuid'
+ else: info["join_key"]=None
+ if info["join_key"]:
+  with DATABASES[project].connect() as con:
+   if "parent_id" in bc and "id" in sc: cond='db."parent_id"::text=ds."id"::text'
+   elif "distribution_uuid" in bc and "kobo_uuid" in sc: cond='db."distribution_uuid"::text=ds."kobo_uuid"::text'
+   else: cond='db."submission_uuid"::text=ds."kobo_uuid"::text'
+   info["joined_rows"]=con.execute(text(f'SELECT COUNT(*) FROM public."{stbl}" ds INNER JOIN public."{btbl}" db ON {cond}')).scalar()
+ return info
 
 def project_kpis(project,r="Toutes les régions",d="Tous les districts",c="Toutes les communes"):
  reg=apply_location_filters(load_registration(project),r,d,c); dist=apply_location_filters(load_distribution_joined(project),r,d,c)
@@ -87,17 +161,25 @@ def compute_volet_metrics(df,name):
  volet=df[df[date].notna()].copy()
  if volet.empty:return None
  group=next((c for c in ["submission_group_id","submission_id","parent_id","submission_uuid","kobo_uuid"] if c in volet),None)
- bid=next((c for c in ["beneficiary_row_id","unique_key"] if c in volet),None); rows=[]
+ bid=next((c for c in ["beneficiary_seq_key","beneficiary_row_id","unique_key"] if c in volet),None); rows=[]; debug=[]
  for q,label in cfg["qty_cols"]:
-  if q not in volet:continue
-  a=volet.assign(_q=pd.to_numeric(volet[q],errors="coerce")); a=a[a._q.gt(0)]
-  if a.empty:continue
+  if q not in volet:
+   debug.append({"Quantité":label,"Colonne":q,"Présente":False});continue
+  raw=volet[q]; parsed=pd.to_numeric(raw,errors="coerce")
+  a=volet.assign(_q=parsed); a=a[a._q.gt(0)]
+  d={"Quantité":label,"Colonne":q,"Présente":True,"Lignes volet":len(volet),
+     "Non-null brut":int(raw.notna().sum()),"Numérique valide":int(parsed.notna().sum()),
+     "Valeurs > 0":len(a),"Groupe utilisé":group,"Id bénéficiaire utilisé":bid,
+     "bid non-null (>0)":int(a[bid].notna().sum()) if bid and not a.empty else 0}
+  if a.empty:debug.append(d);continue
   if group and bid:
    s=a.groupby(group,dropna=False).agg(q=("_q","first"),n=(bid,"nunique")); total=(s.q*s.n).sum(); n=int(s.n.sum())
+   d["Nb groupes distincts"]=a[group].nunique(dropna=True)
   else: total=a._q.sum(); n=int(a["unique_key"].nunique(dropna=True))
+  d["n calculé"]=n; d["total calculé"]=float(total); debug.append(d)
   unit = "kg" if q in ["mais_weight_kg", "rice_weight_kg", "groundnut_weight_kg"] else "unités"
   rows.append({"Quantité":label,"Nombre bénéficiaires":n,"Total distribué":round(float(total),2),"Unité":unit})
- return {"qty_summary":pd.DataFrame(rows),"detail_df":volet,"type_col":cfg["type_col"]}
+ return {"qty_summary":pd.DataFrame(rows),"detail_df":volet,"type_col":cfg["type_col"],"debug":pd.DataFrame(debug)}
 
 st.sidebar.markdown("### 🧭 Navigation")
 page=st.sidebar.radio("Choisir une page",["Vue globale","Suivi des distributions","Suivi données agro","Qualité des données"],label_visibility="collapsed")
@@ -122,12 +204,41 @@ if page=="Vue globale":
 elif page=="Suivi des distributions":
  d=apply_location_filters(load_distribution_joined(project),region,district,commune)
  st.markdown(f'<h2 class="crs-section-title">Suivi des distributions — {project}</h2>',unsafe_allow_html=True);st.caption(filter_caption(region,district,commune))
- if d.empty:st.info("Aucune donnée de distribution.");st.stop()
+ if d.empty:
+  st.info("Aucune donnée de distribution.")
+  diag=diagnose_distribution(project)
+  with st.expander("🔍 Diagnostic",expanded=True):
+   if not diag.get("s_exists"):
+    st.write(f"❌ La table `distribution_submission` est absente pour le projet **{project}**.")
+   elif not diag.get("b_exists"):
+    st.write(f"❌ La table `distribution_beneficiary` est absente pour le projet **{project}**.")
+   else:
+    st.write(f"`distribution_submission` : **{diag['s_rows']}** ligne(s) — `distribution_beneficiary` : **{diag['b_rows']}** ligne(s).")
+    if diag["join_key"] is None:
+     st.write("❌ Aucune paire de colonnes de jointure trouvée entre les deux tables (`parent_id`/`id`, `distribution_uuid`/`kobo_uuid` ou `submission_uuid`/`kobo_uuid`).")
+     st.write("Colonnes disponibles dans `distribution_submission` :");st.code(", ".join(diag["sc"]))
+     st.write("Colonnes disponibles dans `distribution_beneficiary` :");st.code(", ".join(diag["bc"]))
+    else:
+     st.write(f"Jointure utilisée : `{diag['join_key']}` → **{diag.get('joined_rows',0)}** ligne(s) après jointure.")
+     if diag.get('joined_rows',0)==0:
+      st.write("La jointure ne trouve aucune correspondance : vérifiez que les valeurs de ces colonnes concordent bien entre les deux tables (format UUID différent, casse, espaces, colonne vide...).")
+  st.stop()
  available=[n for n,c in VOLET_CONFIG.items() if c["date_col"] in d and d[c["date_col"]].notna().any()]
- if not available:st.info("Aucun volet de distribution ne contient de données.");st.stop()
+ if not available:
+  st.info("Aucun volet de distribution ne contient de données.")
+  with st.expander("🔍 Diagnostic",expanded=True):
+   for name,cfg in VOLET_CONFIG.items():
+    col=cfg["date_col"]
+    if col not in d:st.write(f"- **{name}** : colonne `{col}` absente du jeu de données joint.")
+    else:
+     nn=int(d[col].notna().sum());st.write(f"- **{name}** : colonne `{col}` présente, {nn} valeur(s) non nulle(s) sur {len(d)} ligne(s).")
+  st.stop()
  vm=compute_volet_metrics(d,st.selectbox("Type de distribution",available)); detail=vm["detail_df"]
  st.dataframe(vm["qty_summary"],use_container_width=True,hide_index=True)
  if not vm["qty_summary"].empty:st.plotly_chart(px.bar(vm["qty_summary"],x="Quantité",y="Total distribué",text="Total distribué"),use_container_width=True)
+ with st.expander("🔍 Diagnostic du calcul (pourquoi 0 ?)"):
+  st.dataframe(vm["debug"],use_container_width=True,hide_index=True)
+  st.caption("« Numérique valide » = valeurs converties avec succès en nombre. « Valeurs > 0 » = celles retenues pour le calcul. Si « bid non-null (>0) » est à 0 alors que « Valeurs > 0 » ne l'est pas, l'identifiant bénéficiaire est vide sur ces lignes-là — c'est la cause du 0.")
  cols=[c for c in ["submission_id","parent_id","submission_uuid","beneficiary_row_id","seq_num","sequence_number","present","village","full_name","beneficiary_code","sex","age","cin","agri_date","agri_input_type","mais_weight_kg","rice_weight_kg","groundnut_weight_kg","cassava_qty","cassava_unit","swpotato_qty","swpotato_unit","cuma_type","cuma_weight_kg"] if c in detail]
  st.subheader("Détail des bénéficiaires");st.dataframe(detail[cols],use_container_width=True,hide_index=True)
 
