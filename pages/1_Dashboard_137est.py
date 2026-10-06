@@ -2,11 +2,21 @@
 """Page Streamlit dédiée au projet 137est."""
 
 import unicodedata
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from sqlalchemy import inspect, text
+
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from connections import DATABASES
+
 
 st.set_page_config(
     page_title="Dashboard 137est",
@@ -316,69 +326,168 @@ def project_kpis(region, district, commune):
 
 
 def compute_volet_metrics(df, name):
+    """Calcule bénéficiaires et quantités après déduplication par district/produit."""
     config = VOLET_CONFIG[name]
     date_column = config["date_col"]
+    type_column = config.get("type_col")
+
     if date_column not in df.columns:
         return None
+
     volet = df[df[date_column].notna()].copy()
     if volet.empty:
         return None
-    group_column = next((column for column in [
-        "submission_group_id", "submission_id", "parent_id",
-        "submission_uuid", "kobo_uuid"
-    ] if column in volet.columns), None)
-    beneficiary_id = next((column for column in [
-        "beneficiary_seq_key", "beneficiary_row_id", "unique_key"
-    ] if column in volet.columns), None)
-    rows = []
-    debug = []
+
+    if "present" in volet.columns:
+        presence = volet["present"].map(normalize_text)
+        if presence.isin(PRESENT_VALUES).any():
+            volet = volet[presence.isin(PRESENT_VALUES)].copy()
+    if volet.empty:
+        return None
+
+    if "unique_key" not in volet.columns:
+        volet["unique_key"] = make_unique_key(volet, "cin", "full_name", "age")
+
+    beneficiary_id_candidates = [
+        "unique_key", "ben_id_raw", "beneficiary_code",
+        "beneficiary_row_id", "beneficiary_seq_key",
+    ]
+    available_ids = [column for column in beneficiary_id_candidates if column in volet.columns]
+    volet["_beneficiary_id"] = pd.Series(pd.NA, index=volet.index, dtype="string")
+    for column in available_ids:
+        candidate = volet[column].astype("string").str.strip().replace("", pd.NA)
+        volet["_beneficiary_id"] = volet["_beneficiary_id"].fillna(candidate)
+    missing_id = volet["_beneficiary_id"].isna()
+    volet.loc[missing_id, "_beneficiary_id"] = "ROW_" + volet.index[missing_id].astype(str)
+
+    if "district" in volet.columns:
+        volet["_district"] = (
+            volet["district"].fillna("Non renseigné").astype(str).str.strip()
+            .replace("", "Non renseigné")
+        )
+    else:
+        volet["_district"] = "Tous les districts"
+
+    product_keywords = {
+        "mais_weight_kg": ["mais", "maize"],
+        "rice_weight_kg": ["riz", "rice", "x265", "x266"],
+        "groundnut_weight_kg": ["arachide", "groundnut", "peanut"],
+        "cassava_qty": ["manioc", "cassava"],
+        "swpotato_qty": ["patate douce", "sweet potato", "swpotato"],
+        "cuma_weight_kg": [],
+        "arrosoir_nb": ["arrosoir"],
+        "beche_nb": ["beche", "bêche"],
+    }
     unit_map = {
         "mais_weight_kg": "kg", "rice_weight_kg": "kg",
         "groundnut_weight_kg": "kg", "cassava_qty": "tiges",
         "swpotato_qty": "lianes", "cuma_weight_kg": "sachets",
         "arrosoir_nb": "arrosoirs", "beche_nb": "bêches",
     }
+
+    summary_rows = []
+    district_rows = []
+    debug_rows = []
+    deduplicated_details = []
+
     for quantity_column, label in config["qty_cols"]:
         if quantity_column not in volet.columns:
-            debug.append({"Quantité": label, "Colonne": quantity_column, "Présente": False})
+            debug_rows.append({
+                "Quantité": label, "Colonne": quantity_column, "Présente": False,
+                "Lignes avant déduplication": 0, "Lignes après déduplication": 0,
+                "Doublons supprimés": 0, "Bénéficiaires uniques": 0,
+                "Total calculé": 0,
+            })
             continue
-        raw = volet[quantity_column]
-        parsed = pd.to_numeric(raw, errors="coerce")
-        positive = volet.assign(_quantity=parsed)
-        positive = positive[positive["_quantity"].gt(0)]
-        diagnostics = {
-            "Quantité": label, "Colonne": quantity_column, "Présente": True,
-            "Lignes volet": len(volet), "Non-null brut": int(raw.notna().sum()),
-            "Numérique valide": int(parsed.notna().sum()),
-            "Valeurs > 0": len(positive), "Groupe utilisé": group_column,
-            "Id bénéficiaire utilisé": beneficiary_id,
-        }
-        if positive.empty:
-            debug.append(diagnostics)
+
+        product = volet.copy()
+        product["_quantity"] = pd.to_numeric(product[quantity_column], errors="coerce")
+        product = product[product["_quantity"].notna() & product["_quantity"].gt(0)].copy()
+
+        keywords = product_keywords.get(quantity_column, [])
+        if keywords and type_column and type_column in product.columns:
+            normalized_type = product[type_column].fillna("").map(normalize_text)
+            type_mask = pd.Series(False, index=product.index)
+            for keyword in keywords:
+                type_mask = type_mask | normalized_type.str.contains(
+                    normalize_text(keyword), case=False, regex=False, na=False
+                )
+            if type_mask.any():
+                product = product[type_mask].copy()
+
+        rows_before = len(product)
+        if product.empty:
+            debug_rows.append({
+                "Quantité": label, "Colonne": quantity_column, "Présente": True,
+                "Lignes avant déduplication": rows_before,
+                "Lignes après déduplication": 0, "Doublons supprimés": 0,
+                "Bénéficiaires uniques": 0, "Total calculé": 0,
+            })
             continue
-        if group_column and beneficiary_id:
-            grouped = positive.groupby(group_column, dropna=False).agg(
-                quantity=("_quantity", "first"),
-                beneficiaries=(beneficiary_id, "nunique"),
-            )
-            total = (grouped["quantity"] * grouped["beneficiaries"]).sum()
-            number = int(grouped["beneficiaries"].sum())
-        else:
-            total = positive["_quantity"].sum()
-            number = int(positive["unique_key"].nunique(dropna=True))
-        diagnostics["n calculé"] = number
-        diagnostics["total calculé"] = float(total)
-        debug.append(diagnostics)
-        rows.append({
+
+        sort_columns = [
+            column for column in [
+                date_column, "submission_time", "submission_id", "beneficiary_row_id"
+            ] if column in product.columns
+        ]
+        if sort_columns:
+            product = product.sort_values(sort_columns, na_position="last")
+
+        deduplicated = product.drop_duplicates(
+            subset=["_district", "_beneficiary_id"], keep="first"
+        ).copy()
+        rows_after = len(deduplicated)
+        beneficiaries = int(deduplicated["_beneficiary_id"].nunique())
+        total_quantity = float(deduplicated["_quantity"].sum())
+
+        summary_rows.append({
             "Quantité": label,
-            "Nombre bénéficiaires": number,
-            "Total distribué": round(float(total), 2),
+            "Nombre bénéficiaires": beneficiaries,
+            "Total distribué": round(total_quantity, 2),
             "Unité": unit_map.get(quantity_column, "unités"),
         })
+
+        district_summary = (
+            deduplicated.groupby("_district", dropna=False)
+            .agg(
+                beneficiaries=("_beneficiary_id", "nunique"),
+                total_quantity=("_quantity", "sum"),
+            )
+            .reset_index()
+        )
+        for _, district_row in district_summary.iterrows():
+            district_rows.append({
+                "District": district_row["_district"],
+                "Quantité": label,
+                "Nombre bénéficiaires": int(district_row["beneficiaries"]),
+                "Total distribué": round(float(district_row["total_quantity"]), 2),
+                "Unité": unit_map.get(quantity_column, "unités"),
+            })
+
+        debug_rows.append({
+            "Quantité": label,
+            "Colonne": quantity_column,
+            "Présente": True,
+            "Lignes avant déduplication": rows_before,
+            "Lignes après déduplication": rows_after,
+            "Doublons supprimés": rows_before - rows_after,
+            "Bénéficiaires uniques": beneficiaries,
+            "Total calculé": round(total_quantity, 2),
+        })
+
+        detail_copy = deduplicated.copy()
+        detail_copy["_produit"] = label
+        detail_copy["_unite"] = unit_map.get(quantity_column, "unités")
+        deduplicated_details.append(detail_copy)
+
     return {
-        "qty_summary": pd.DataFrame(rows),
-        "detail_df": volet,
-        "debug": pd.DataFrame(debug),
+        "qty_summary": pd.DataFrame(summary_rows),
+        "district_summary": pd.DataFrame(district_rows),
+        "detail_df": (
+            pd.concat(deduplicated_details, ignore_index=True)
+            if deduplicated_details else volet.iloc[0:0].copy()
+        ),
+        "debug": pd.DataFrame(debug_rows),
     }
 
 
@@ -462,25 +571,79 @@ elif page == "Suivi des distributions":
 
     selected_type = st.selectbox("Type de distribution", available)
     volet_metrics = compute_volet_metrics(distribution, selected_type)
+    if volet_metrics is None:
+        st.info("Aucune donnée exploitable pour ce type de distribution.")
+        st.stop()
+
     detail = volet_metrics["detail_df"]
-    st.dataframe(volet_metrics["qty_summary"], use_container_width=True, hide_index=True)
-    if not volet_metrics["qty_summary"].empty:
+    qty_summary = volet_metrics["qty_summary"]
+    district_summary = volet_metrics["district_summary"]
+
+    st.subheader("Résumé général sans doublons")
+    if qty_summary.empty:
+        st.info("Aucune quantité positive disponible pour ce volet.")
+    else:
+        st.dataframe(qty_summary, use_container_width=True, hide_index=True)
         st.plotly_chart(
-            px.bar(volet_metrics["qty_summary"], x="Quantité", y="Total distribué", text="Total distribué"),
+            px.bar(
+                qty_summary,
+                x="Quantité",
+                y="Total distribué",
+                color="Quantité",
+                text="Total distribué",
+                hover_data=["Nombre bénéficiaires", "Unité"],
+                title="Quantités distribuées après déduplication des bénéficiaires",
+            ),
             use_container_width=True,
         )
+
+    st.subheader("Résumé par district sans doublons")
+    if district_summary.empty:
+        st.info("Aucun résumé par district disponible.")
+    else:
+        district_summary = district_summary.sort_values(["District", "Quantité"])
+        st.dataframe(district_summary, use_container_width=True, hide_index=True)
+        st.plotly_chart(
+            px.bar(
+                district_summary,
+                x="District",
+                y="Nombre bénéficiaires",
+                color="Quantité",
+                barmode="group",
+                text="Nombre bénéficiaires",
+                hover_data=["Total distribué", "Unité"],
+                title="Bénéficiaires uniques par district et par produit",
+            ),
+            use_container_width=True,
+        )
+        st.plotly_chart(
+            px.bar(
+                district_summary,
+                x="District",
+                y="Total distribué",
+                color="Quantité",
+                barmode="group",
+                text="Total distribué",
+                hover_data=["Nombre bénéficiaires", "Unité"],
+                title="Quantités distribuées par district après déduplication",
+            ),
+            use_container_width=True,
+        )
+
     with st.expander("🔍 Diagnostic du calcul"):
         st.dataframe(volet_metrics["debug"], use_container_width=True, hide_index=True)
 
     detail_columns = [column for column in [
+        "_district", "_produit", "_quantity", "_unite", "_beneficiary_id",
         "submission_id", "parent_id", "submission_uuid", "beneficiary_row_id",
         "seq_num", "sequence_number", "present", "village", "full_name",
         "beneficiary_code", "sex", "age", "cin", "agri_date",
         "agri_input_type", "mais_weight_kg", "rice_weight_kg",
         "groundnut_weight_kg", "cassava_qty", "cassava_unit",
         "swpotato_qty", "swpotato_unit", "cuma_type", "cuma_weight_kg",
+        "pma_type", "arrosoir_nb", "beche_nb",
     ] if column in detail.columns]
-    st.subheader("Détail des bénéficiaires")
+    st.subheader("Détail des bénéficiaires sans doublons")
     st.dataframe(detail[detail_columns], use_container_width=True, hide_index=True)
 
 elif page == "Suivi données agro":
