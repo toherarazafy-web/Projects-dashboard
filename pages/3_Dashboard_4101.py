@@ -1,9 +1,17 @@
 # -*- coding: utf-8 -*-
 import html
+import sys
+from pathlib import Path
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from sqlalchemy import inspect, text
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from connections import DATABASES
 
 st.set_page_config(page_title="Dashboard Projet 4101", page_icon="📊", layout="wide")
@@ -60,6 +68,31 @@ def title(t):st.markdown(f'<h2 class="title">{html.escape(t)}</h2>',unsafe_allow
 def empty(msg="Aucune donnée disponible pour les filtres sélectionnés."):st.info(msg)
 def qcol(df):return first(df,["quantite_distribuee","quantite","quantite_totale","nombre","quantite_semence","quantite_semences"])
 def ccol(df):return first(df,["categorie_semences","categorie_semence","article","type_intrant","chaine_valeur","designation"])
+def acol(df):return first(df,["article","categorie_semences","categorie_semence","type_intrant","designation","chaine_valeur"])
+
+def article_summary(df,id_col=None):
+    """Tableau : nombre de bénéficiaires et quantité distribuée par article."""
+    art=acol(df);qty=qcol(df)
+    if df.empty or not art:return pd.DataFrame()
+    d=df.copy()
+    d[art]=d[art].fillna("Non renseigné").astype(str).str.strip().replace("","Non renseigné")
+    keys=[art]
+    if "unite" in d and art!="unite":
+        d["unite"]=d["unite"].fillna("").astype(str).str.strip();keys.append("unite")
+    d["_n"]=1
+    agg={"Bénéficiaires":(id_col,"nunique") if id_col and id_col in d else ("_n","sum")}
+    if qty:agg["Quantité distribuée"]=(qty,"sum")
+    out=d.groupby(keys,dropna=False).agg(**agg).reset_index()
+    out=out.rename(columns={art:"Article","unite":"Unité"})
+    return out.sort_values("Quantité distribuée" if qty else "Bénéficiaires",ascending=False).reset_index(drop=True)
+
+def show_article_summary(df,id_col=None,who="Bénéficiaires"):
+    st.subheader("Résumé par article")
+    s=article_summary(df,id_col)
+    if s.empty:
+        st.info("Aucune colonne d'article disponible pour produire le résumé.");return
+    s=s.rename(columns={"Bénéficiaires":who})
+    st.dataframe(s,width="stretch",hide_index=True)
 
 benef=prep(load(TABLES["benef"]));menages=prep(load(TABLES["menages"]));groupements=prep(load(TABLES["groupements"]));production=prep(load(TABLES["production"]))
 
@@ -79,7 +112,7 @@ commune=st.sidebar.selectbox("Commune",options(s2,"commune"));s3=filt(s2,{"commu
 fokontany=st.sidebar.selectbox("Fokontany",options(s3,"fokontany"))
 filters={"region":region,"district":district,"commune":commune,"fokontany":fokontany}
 page=st.sidebar.radio("Navigation",["Vue globale","Distribution aux ménages","Distribution aux groupements","Suivi de production","Carte","Qualité des données"])
-if st.sidebar.button("Actualiser les données",use_container_width=True):st.cache_data.clear();st.rerun()
+if st.sidebar.button("Actualiser les données",width="stretch"):st.cache_data.clear();st.rerun()
 bdf,hdf,gdf,pdf=[filt(d,filters) for d in [benef,menages,groupements,production]]
 
 if page=="Vue globale":
@@ -90,7 +123,7 @@ if page=="Vue globale":
     for col,(lab,val) in zip(st.columns(4),vals):col.metric(lab,val)
     if not pdf.empty and "chaine_valeur" in pdf:
         x=pdf.groupby("chaine_valeur",dropna=False).agg(Ménages=("nom_code_menage","nunique"),Production=("production_reelle_kg","sum")).reset_index()
-        a,b=st.columns(2);a.plotly_chart(px.bar(x,x="chaine_valeur",y="Ménages",color="chaine_valeur",title="Ménages par chaîne de valeur"),use_container_width=True);b.plotly_chart(px.bar(x,x="chaine_valeur",y="Production",color="chaine_valeur",title="Production réelle par chaîne de valeur"),use_container_width=True)
+        a,b=st.columns(2);a.plotly_chart(px.bar(x,x="chaine_valeur",y="Ménages",color="chaine_valeur",title="Ménages par chaîne de valeur"),width="stretch");b.plotly_chart(px.bar(x,x="chaine_valeur",y="Production",color="chaine_valeur",title="Production réelle par chaîne de valeur"),width="stretch")
 
 elif page=="Distribution aux ménages":
     title("Distribution aux ménages")
@@ -98,9 +131,10 @@ elif page=="Distribution aux ménages":
     else:
         hid=first(hdf,["code_benef","code_beneficiaire","nom_code_menage"]);cat=ccol(hdf);qty=qcol(hdf)
         for col,(lab,val) in zip(st.columns(3),[("Ménages bénéficiaires",nunique(hdf,hid) if hid else len(hdf)),("Catégories de semences",nunique(hdf,cat) if cat else 0),("Quantité distribuée",fmt(total(hdf,qty)) if qty else "N/D")]):col.metric(lab,val)
+        show_article_summary(hdf,hid,"Ménages bénéficiaires")
         if cat and qty:
-            x=hdf.groupby(cat,dropna=False)[qty].sum().reset_index();st.plotly_chart(px.bar(x,x=cat,y=qty,color=cat,title="Quantité par catégorie de semences"),use_container_width=True)
-        st.dataframe(hdf.drop(columns=["nom_code_menage"],errors="ignore"),use_container_width=True,hide_index=True)
+            x=hdf.groupby(cat,dropna=False)[qty].sum().reset_index();st.plotly_chart(px.bar(x,x=cat,y=qty,color=cat,title="Quantité par catégorie de semences"),width="stretch")
+        st.dataframe(hdf.drop(columns=["nom_code_menage"],errors="ignore"),width="stretch",hide_index=True)
 
 elif page=="Distribution aux groupements":
     title("Distribution aux groupements")
@@ -108,9 +142,10 @@ elif page=="Distribution aux groupements":
     else:
         cat=ccol(gdf);qty=qcol(gdf)
         for col,(lab,val) in zip(st.columns(3),[("Groupements bénéficiaires",nunique(gdf,"nom_groupement")),("Catégories de semences",nunique(gdf,cat) if cat else 0),("Quantité distribuée",fmt(total(gdf,qty)) if qty else "N/D")]):col.metric(lab,val)
+        show_article_summary(gdf,"nom_groupement" if "nom_groupement" in gdf else None,"Groupements bénéficiaires")
         if cat and qty:
-            x=gdf.groupby(cat,dropna=False)[qty].sum().reset_index();st.plotly_chart(px.bar(x,x=cat,y=qty,color=cat,title="Quantité distribuée aux groupements"),use_container_width=True)
-        st.dataframe(gdf,use_container_width=True,hide_index=True)
+            x=gdf.groupby(cat,dropna=False)[qty].sum().reset_index();st.plotly_chart(px.bar(x,x=cat,y=qty,color=cat,title="Quantité distribuée aux groupements"),width="stretch")
+        st.dataframe(gdf,width="stretch",hide_index=True)
 
 elif page=="Suivi de production":
     title("Suivi de production agricole")
@@ -122,11 +157,11 @@ elif page=="Suivi de production":
         for row in [metrics[:4],metrics[4:]]:
             for col,(lab,val) in zip(st.columns(4),row):col.metric(lab,val)
         summary=view.groupby("chaine_valeur",dropna=False).agg(menages=("nom_code_menage","nunique"),groupements=("nom_groupement","nunique"),semences_recues_kg=("quantite_semences_recues","sum"),semences_semees_kg=("quantite_semences_semees","sum"),superficie_emblavee_ha=("superficie_emblavee_ha","sum"),production_estimee_kg=("production_estimee_kg","sum"),production_reelle_kg=("production_reelle_kg","sum"),quantite_consommee_kg=("quantite_consommee_kg","sum"),quantite_vendue_kg=("quantite_vendue_kg","sum"),quantite_stockee_kg=("quantite_stockee_kg","sum"),prix_vente_moyen=("prix_vente_marche","mean")).reset_index()
-        st.subheader("Résumé par chaîne de valeur");st.dataframe(summary,use_container_width=True,hide_index=True)
+        st.subheader("Résumé par chaîne de valeur");st.dataframe(summary,width="stretch",hide_index=True)
         a,b=st.columns(2)
-        x=summary.melt(id_vars="chaine_valeur",value_vars=["production_estimee_kg","production_reelle_kg"],var_name="Type",value_name="Quantité (kg)");a.plotly_chart(px.bar(x,x="chaine_valeur",y="Quantité (kg)",color="Type",barmode="group",title="Production estimée et réelle"),use_container_width=True)
-        y=summary.melt(id_vars="chaine_valeur",value_vars=["quantite_consommee_kg","quantite_vendue_kg","quantite_stockee_kg"],var_name="Utilisation",value_name="Quantité (kg)");b.plotly_chart(px.bar(y,x="chaine_valeur",y="Quantité (kg)",color="Utilisation",barmode="group",title="Utilisation de la production"),use_container_width=True)
-        visible=view.drop(columns=["nom_code_menage"],errors="ignore");st.subheader("Détail du suivi");st.caption("Le code ménage est masqué dans l’aperçu.");st.dataframe(visible,use_container_width=True,hide_index=True)
+        x=summary.melt(id_vars="chaine_valeur",value_vars=["production_estimee_kg","production_reelle_kg"],var_name="Type",value_name="Quantité (kg)");a.plotly_chart(px.bar(x,x="chaine_valeur",y="Quantité (kg)",color="Type",barmode="group",title="Production estimée et réelle"),width="stretch")
+        y=summary.melt(id_vars="chaine_valeur",value_vars=["quantite_consommee_kg","quantite_vendue_kg","quantite_stockee_kg"],var_name="Utilisation",value_name="Quantité (kg)");b.plotly_chart(px.bar(y,x="chaine_valeur",y="Quantité (kg)",color="Utilisation",barmode="group",title="Utilisation de la production"),width="stretch")
+        visible=view.drop(columns=["nom_code_menage"],errors="ignore");st.subheader("Détail du suivi");st.caption("Le code ménage est masqué dans l’aperçu.");st.dataframe(visible,width="stretch",hide_index=True)
         st.download_button("Télécharger le suivi filtré",visible.to_csv(index=False).encode("utf-8-sig"),"suivi_production_4101_filtre.csv","text/csv")
 
 elif page=="Carte":
@@ -143,6 +178,6 @@ else:
     else:
         for col,(lab,val) in zip(st.columns(4),[("Lignes",len(d)),("Colonnes",len(d.columns)),("Doublons",int(d.duplicated().sum())),("Cellules manquantes",int(d.isna().sum().sum()))]):col.metric(lab,fmt(val))
         q=pd.DataFrame({"Colonne":d.columns,"Type":d.dtypes.astype(str).values,"Valeurs manquantes":d.isna().sum().values,"% manquant":d.isna().mean().mul(100).round(1).values,"Valeurs distinctes":d.nunique(dropna=True).values}).sort_values("% manquant",ascending=False)
-        st.plotly_chart(px.bar(q.head(20),x="Colonne",y="% manquant",color="% manquant",title="Valeurs manquantes"),use_container_width=True);st.dataframe(q,use_container_width=True,hide_index=True)
+        st.plotly_chart(px.bar(q.head(20),x="Colonne",y="% manquant",color="% manquant",title="Valeurs manquantes"),width="stretch");st.dataframe(q,width="stretch",hide_index=True)
 
 st.caption("Dashboard Projet 4101 | Résultats selon les filtres actifs.")
